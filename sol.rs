@@ -17,7 +17,7 @@ use std::io::{self, Read, Write, StdinLock};
 const ESC: char = '\x1b';
 const BEL: char = '\x07';
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum Suite {
     Heart,
     Club,
@@ -128,14 +128,14 @@ fn main() {
     let termheight = termsize.map(|(_,h)| h - 2).unwrap();
 
 
-    let mut board: [Vec<usize>; 7] = [
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new()
+    let mut board: [VecDeque<usize>; 7] = [
+        VecDeque::new(),
+        VecDeque::new(),
+        VecDeque::new(),
+        VecDeque::new(),
+        VecDeque::new(),
+        VecDeque::new(),
+        VecDeque::new()
     ];
 
     let mut counter = 0;
@@ -143,16 +143,16 @@ fn main() {
     for i in 0..7{
         let mut col = &mut board[i];
         for j in (0..=i){
-            col.push(counter);
+            col.push_back(counter);
             counter += 1;
         }
         if col.len() > 0 {
-            deck[col[col.len() - 1]].hidden = false;
+            deck[*col.back().unwrap()].hidden = false;
         }
     }
 
     let mut drawpile: VecDeque<usize> = (counter..52).collect();
-    deck[*drawpile.get(0).unwrap()].hidden = false;
+    deck[*drawpile.back().unwrap()].hidden = false;
 
     let mut game = Game {
         width: termwidth,
@@ -163,10 +163,13 @@ fn main() {
         board: board,
 
         draw: drawpile,
-        foundation: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+        foundation: [VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new()],
 
         cursor: 0,
+        cursor_y: 0,
         selected_card: None,
+        card_selected_from_pos: 0,
+        selected_cards: VecDeque::new(),
     };
 
     game.run();
@@ -180,25 +183,28 @@ struct Game<'a>{
     stdin: Box<Keys<StdinLock<'a>>>,
 
     deck: [Card; 52],
-    board: [Vec<usize>; 7],
+    board: [VecDeque<usize>; 7],
     draw: VecDeque<usize>,
-    foundation: [Vec<usize>; 4],
+    foundation: [VecDeque<usize>; 4],
 
     cursor: u8,
-    selected_card: Option(usize),
+    cursor_y: u8,
+    selected_card: Option<usize>,
+    card_selected_from_pos: u8,
+    selected_cards: VecDeque<usize>,
 }
 
 impl Game<'_> {
     fn show(&mut self){
         write!(self.stdout, "{}{}{}{}{}", clear::All, style::Reset, cursor::Goto(1, 1), color::Fg(color::Reset), color::Bg(color::Reset));
-        match self.draw.get(0) {
+        match self.draw.back() {
             None => write!(self.stdout, "{}{}|#x#x#x#|{}", color::Bg(color::Yellow), color::Fg(color::Black), style::Reset),
             Some(x) => write!(self.stdout, "{}", self.deck[*x]),
         };
 
         for (i, col) in self.foundation.iter().enumerate() {
             write!(self.stdout, "{}", cursor::Goto(28 + (i as u16 * 9), 1));
-            match col.last() {
+            match col.back() {
                 None => write!(self.stdout, "{}{}|#x#x#x#|{}", color::Bg(color::Yellow), color::Fg(color::LightYellow), style::Reset),
                 Some(x) => write!(self.stdout, "{}", self.deck[*x]),
             };
@@ -210,42 +216,80 @@ impl Game<'_> {
                 write!(self.stdout, "{1}{0}", self.deck[*card as usize], cursor::Goto(1 + (i as u16 * 9), 3+ j as u16));
             }
         }
+        // determine WHERE to draw cursor
         match self.cursor {
             card_col @ 0..=6 => write!(self.stdout, "{}", cursor::Goto(1 + (card_col as u16 * 9), 19)),
             foundation_col @ 7..=10 => write!(self.stdout, "{}", cursor::Goto(28 + ((foundation_col as u16 - 7)* 9), 2)),
             _ => write!(self.stdout, "{}", cursor::Goto(1, 2)),
         };
-        write!(self.stdout, "{}{}|=======|", color::Fg(color::Blue), color::Bg(color::Black));
+        // determine WHAT to draw as the cursor
+        match self.selected_card {
+            None => write!(self.stdout, "{}{}|=======|", color::Fg(color::Blue), color::Bg(color::Black)),
+            Some(card_idx) => write!(self.stdout, "{}", self.deck[card_idx]),
+        };
         write!(self.stdout, "{}{}{}{}", cursor::Goto(15, 1), color::Bg(color::Black), color::Fg(color::White), self.cursor);
-
-        if self.selected_cursor <= 10 {
-            write!(self.stdout, "{}{}{}{}", cursor::Goto(19, 1), color::Bg(color::Black), color::Fg(color::White), self.selected_cursor);
-            match self.selected_cursor {
-                card_col @ 0..=6 => write!(self.stdout, "{}", cursor::Goto(1 + (card_col as u16 * 9), 19)),
-                foundation_col @ 7..=10 => write!(self.stdout, "{}", cursor::Goto(28 + ((foundation_col as u16 - 7)* 9), 2)),
-                _ => Ok(()),
-            };
-            write!(self.stdout, "{}{}", color::Fg(color::Blue), color::Bg(color::White));
-            if self.cursor == self.selected_cursor {
-                write!(self.stdout, "|#=#=#=#|");
-            } else {
-                write!(self.stdout, "|=======|");
-            }
-        }
 
         write!(self.stdout, "{}{}{}{}", style::Reset, cursor::Goto(1, 1), color::Fg(color::Reset), color::Bg(color::Reset));
         self.stdout.flush().unwrap();
     }
-    fn try_move(&mut self){
-        if self.cursor == self.selected_cursor {
-            write!(self.stdout, "{BEL}");
-            write!(self.stdout, "{BEL}");
-            return
-        }
-        let card_to_move = match self.selected_cursor {
-            c_col @ 0..=7 => self.board[c_col].get(),
-        };
+    fn put_card_back(&mut self){
         write!(self.stdout, "{BEL}");
+        match self.card_selected_from_pos {
+            c_col @ 0..=6 => self.board[c_col as usize].push_back(self.selected_card.unwrap()),
+            f_col @ 7..=10 => self.foundation[f_col as usize].push_back(self.selected_card.unwrap()),
+            _ => (),
+        }
+
+        self.selected_card = None;
+    }
+    fn try_move(&mut self){
+        let card_idx = self.selected_card.unwrap();
+        let card = self.deck[card_idx];
+        
+        match self.cursor {
+            f_col @ 7..=10 => {
+                let foundation = self.foundation[f_col as usize];
+                match foundation.back() {
+                    None => {
+                        if 1 == card.value {
+                            foundation.push_back(card_idx);
+                        } else {
+                            self.put_card_back();
+                        }
+                    },
+                    Some(fcard_idx) => {
+                        let fcard = self.deck[fcard_idx];
+                        if fcard.suite == card.suite && fcard.value = card.value - 1 {
+                            foundation.push_back(card_idx);
+                        } else {
+                            self.put_card_back();
+                        }
+                    }
+                }
+            },
+            c_col @ 0..=6 => {
+                let col = self.board[c_col as usize];
+                match col.back() {
+                    None => {
+                        if 13 == card.value { // can only place kings on open space
+                            foundation.push_back(card_idx);
+                        } else {
+                            self.put_card_back();
+                        }
+                    },
+                    Some(fcard_idx) => {
+                        let fcard = self.deck[*fcard_idx];
+                        if fcard.suite == card.suite && fcard.value == card.value - 1 {
+                            foundation.push_back(card_idx);
+                        } else {
+                            self.put_card_back();
+                        }
+                    }
+                }
+            },
+            _ => (),
+        }
+
     }
     fn run(&mut self){
         write!(self.stdout, "{}", cursor::Hide);
@@ -253,31 +297,37 @@ impl Game<'_> {
             self.show();
             let b = self.stdin.next().unwrap().unwrap();
             use termion::event::Key::*;
+
+            let col_height = match (match self.cursor {
+                c_col @ 0..=6 => self.board[c_col as usize].len(),
+                f_col @ 7..=10 => self.foundation[f_col as usize].len(),
+                _ => 0
+            }) {
+                0 => 1,
+                x @ _ => x,
+            } as u8;
             match b {
                 Char('q') | Char('c') => {
                     write!(self.stdout, "{}{}", style::Reset, cursor::Show);
                     return
                 },
                 Char('h') | Char('a') | Left  => self.cursor = (self.cursor as i16 - 1).rem_euclid(11) as u8,
-                Char('j') | Char('s') | Down  => self.cursor = match self.cursor {
-                    0..=2 => 7,
-                    card_col @ 3..=6 => card_col,
-                    foundation_col @ 7..=10 => foundation_col - 4,
-                    _ => 0,
-                },
-                Char('k') | Char('w') | Up    => self.cursor = match self.cursor {
-                    0..=2 => 7,
-                    card_col @ 3..=6 => card_col + 4,
-                    foundation_col @ 7..=10 => foundation_col,
-                    _ => 0,
-                },
                 Char('l') | Char('d') | Right => self.cursor = (self.cursor + 1).rem_euclid(11),
+                Char('j') | Char('s') | Down  => self.cursor = (self.cursor_y as i16 - 1).rem_euclid(col_height as i16) as u8,
+                Char('k') | Char('w') | Up    => self.cursor = (self.cursor_y + 1).rem_euclid(col_height),
                 Char(' ') => {
-                    if self.selected_cursor > 10 {
-                        self.selected_cursor = self.cursor;
-                    } else {
-                        self.try_move();
-                        self.selected_cursor = 11;
+                    match self.selected_card {
+                        None => {
+                            self.card_selected_from_pos = self.cursor;
+                            self.selected_card = match self.cursor {
+                                c_col @ 0..=6 => self.board[c_col as usize].pop_back(),
+                                f_col @ 7..=10 => self.foundation[f_col as usize].pop_back(),
+                                _ => None,
+                            };
+                        },
+                        Some(card_idx) => {
+                            self.try_move();
+                        },
                     }
                 },
                 _ => (),
