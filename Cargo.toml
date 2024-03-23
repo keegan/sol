@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
+[patch.crates-io]
+termion = { git = "https://gitlab.redox-os.org/Jezza/termion.git", branch = "windows-support" }
 [dependencies]
 rand = "0.8.5"
-termion = "3.0.0"
+termion = "1.5.5"
 
 [[bin]]
 name = "sol"
