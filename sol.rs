@@ -3,6 +3,11 @@ extern crate termion;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
+use std::thread::sleep;
+use std::time;
+
+use std::process::exit;
+
 use std::collections::VecDeque;
 
 use termion::input::Keys;
@@ -553,6 +558,15 @@ impl Game<'_> {
     fn run(&mut self) {
         write!(self.stdout, "{}", cursor::Hide).unwrap();
         loop {
+            if self.draw.len() == 0 {
+                let mut still_playing = false;
+                for card in self.deck.iter() {
+                    still_playing |= card.hidden; // if any cards hidden, we keep playing
+                }
+                if !still_playing {
+                    return self.win();
+                }
+            }
             for i in 0..7 {
                 if i != self.card_selected_from_pos {
                     let col: &mut VecDeque<usize> = &mut self.board[i as usize];
@@ -759,5 +773,103 @@ impl Game<'_> {
                 _ => (),
             };
         }
+    }
+    fn win(&mut self) {
+        let mut ring: VecDeque<usize> = VecDeque::new();
+        self.foundation[0] = (0..13).collect();
+        self.foundation[1] = (13..26).collect();
+        self.foundation[2] = (26..39).collect();
+        self.foundation[3] = (39..52).collect();
+        let mut ctr: usize = 0;
+        let mut ctr1: usize = 0;
+        loop {
+            if self.foundation[0].len() > 1 {
+                ring.push_front(self.foundation[0].pop_back().unwrap());
+            } else if self.foundation[1].len() > 1 {
+                ring.push_front(self.foundation[1].pop_back().unwrap());
+            } else if self.foundation[2].len() > 1 {
+                ring.push_front(self.foundation[2].pop_back().unwrap());
+            } else if self.foundation[3].len() > 1 {
+                ring.push_front(self.foundation[3].pop_back().unwrap());
+            } else {
+                ctr1 += 1;
+                ring.rotate_left(1);
+            }
+            if ctr1 > 20 {
+                break;
+            }
+            ctr = ctr + 1;
+            self.show();
+            for (i, cidx) in ring.iter().enumerate() {
+                let card = &mut self.deck[*cidx];
+                if ((i + ctr) % 2) == 0 {
+                    card.hidden = false;
+                } else {
+                    card.hidden = true;
+                }
+                let x: u16;
+                let y: u16;
+                if i < 25 {
+                    y = 3 + i as u16;
+                    x = 50 - ((3.0 * (169.0 - (17 - y as i16).pow(2) as f64).sqrt()) as u16);
+                } else {
+                    y = 3 + 52 - i as u16;
+                    x = 50 + ((3.0 * (169.0 - (17 - y as i16).pow(2) as f64).sqrt()) as u16);
+                }
+                write!(self.stdout, "{}{}", cursor::Goto(x, y), card).unwrap();
+            }
+            self.stdout.flush().unwrap();
+            sleep(time::Duration::from_millis(50));
+        }
+        ctr = 1;
+        loop {
+            if ctr > 800 {
+                break;
+            }
+            ctr += 1;
+            let xscale: f64 =
+                2.0 * ((ctr as f64 / 23.0).cos().abs() + (ctr as f64 / 130.0).sin().abs() * 0.5);
+            self.show();
+            for (i, cidx) in ring.iter().enumerate() {
+                let card = &mut self.deck[*cidx];
+                if ((i + ctr) % 2) == 0 {
+                    card.hidden = false;
+                } else {
+                    card.hidden = true;
+                }
+                let x: u16;
+                let y: u16;
+                if i < 25 {
+                    y = 3 + i as u16;
+                    x = 50 - ((xscale * (169.0 - (17 - y as i16).pow(2) as f64).sqrt()) as u16);
+                } else {
+                    y = 3 + 52 - i as u16;
+                    x = 50 + ((xscale * (169.0 - (17 - y as i16).pow(2) as f64).sqrt()) as u16);
+                }
+                write!(self.stdout, "{}{}", cursor::Goto(x, y), card).unwrap();
+            }
+            self.stdout.flush().unwrap();
+            sleep(time::Duration::from_millis(5));
+        }
+        write!(
+            self.stdout,
+            "{}{}{}",
+            cursor::Goto(10, 40),
+            color::Fg(color::Green),
+            color::Bg(color::Black)
+        )
+        .unwrap();
+        write!(self.stdout, "You Win!!!").unwrap();
+        write!(self.stdout, "{}", cursor::Goto(1, 51)).unwrap();
+        write!(
+            self.stdout,
+            "{}{}{}{}",
+            style::Reset,
+            cursor::Show,
+            color::Fg(color::Reset),
+            color::Bg(color::Reset)
+        )
+        .unwrap();
+        self.stdout.flush().unwrap();
     }
 }
