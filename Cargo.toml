@@ -13,3 +13,10 @@ termion = "1.5.5"
 [[bin]]
 name = "sol"
 path = "sol.rs"
+
+[profile.release]
+lto = true
+strip = true
+opt-level = "z"
+codegen-units = 1
+panic="abort"

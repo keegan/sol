@@ -1,12 +1,7 @@
 extern crate termion;
 
-use rand::seq::SliceRandom;
-use rand::thread_rng;
-
 use std::thread::sleep;
 use std::time;
-
-use std::process::exit;
 
 use std::collections::VecDeque;
 
@@ -71,6 +66,37 @@ impl fmt::Display for Card {
                 Suite::Club => write!(f, "{ESC}[30;47m| {value}  o8 |{ESC}[0m"),
                 Suite::Spade => write!(f, "{ESC}[30;47m| {value}  3> |{ESC}[0m"),
             }
+        }
+    }
+}
+
+trait MyShuffle {
+    fn myshuffle(&mut self);
+}
+
+impl MyShuffle for [Card; 52] {
+    fn myshuffle(&mut self) {
+        let mut t = time::SystemTime::now()
+            .duration_since(time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        // The algorithm below is based on Durstenfeld's algorithm for the
+        // [Fisher–Yates shuffle](https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#The_modern_algorithm)
+        // for an unbiased permutation.
+        // It ensures that the last `amount` elements of the slice
+        // are randomly selected from the whole slice.
+
+        // `IncreasingUniform::next_index()` is faster than `gen_index`
+        // but only works for 32 bit integers
+        // So we must use the slow method if the slice is longer than that.
+
+        let shift = (52 as u32).leading_zeros();
+        let imask: u32 = u32::MAX >> shift;
+        for i in (1..self.len()).rev() {
+            let swapidx: usize = (t & imask) as usize % i;
+            t = t.rotate_right(shift);
+            print!("i:{i}, shift{shift}, imask{imask}, swapidx{swapidx}, t{t}: -- swapping {i} and {swapidx}\n");
+            self.swap(i, swapidx);
         }
     }
 }
@@ -338,8 +364,9 @@ fn main() {
             suite: Suite::Spade,
         },
     ];
-    deck.shuffle(&mut thread_rng());
-
+    deck.myshuffle();
+    deck.myshuffle();
+    deck.myshuffle();
     let stdout = io::stdout();
     let stdout = stdout.lock();
 
@@ -347,8 +374,6 @@ fn main() {
     let stdin = stdin.lock();
 
     let stdout = stdout.into_raw_mode().unwrap();
-    let termsize = termion::terminal_size().ok();
-    let termwidth = termsize.map(|(w, _)| w - 2).unwrap();
 
     let mut board: [VecDeque<usize>; 7] = [
         VecDeque::new(),
@@ -364,7 +389,7 @@ fn main() {
 
     for i in 0..7 {
         let col = &mut board[i];
-        for j in 0..=i {
+        for _ in 0..=i {
             col.push_back(counter);
             counter += 1;
         }
@@ -376,7 +401,6 @@ fn main() {
     }
 
     let mut game = Game {
-        width: termwidth,
         stdout: Box::new(stdout),
         stdin: Box::new(stdin.keys()),
 
@@ -403,8 +427,6 @@ fn main() {
 
 /// The game state.
 struct Game<'a> {
-    width: u16,
-
     stdout: Box<dyn Write>,
     stdin: Box<Keys<StdinLock<'a>>>,
 
@@ -585,6 +607,7 @@ impl Game<'_> {
                 _ => 1,
             };
             match b {
+                Char('t') | Char('\n') | Char('\r') => self.auto(),
                 Char('q') | Char('c') => {
                     write!(self.stdout, "{}{}", style::Reset, cursor::Show).unwrap();
                     return;
@@ -685,6 +708,7 @@ impl Game<'_> {
                                 f_col @ 7..=10 => {
                                     self.selected_card =
                                         self.foundation[(f_col - 7) as usize].pop_back();
+                                    self.selected_cards.push_back(self.selected_card.unwrap());
                                 }
                                 _ => self.selected_card = None,
                             };
@@ -774,6 +798,46 @@ impl Game<'_> {
             };
         }
     }
+    fn auto(&mut self) {
+        for c in 0..8 {
+            let col;
+            if c < 7 {
+                col = &mut self.board[c];
+            } else {
+                col = &mut self.draw;
+            }
+            let topcard = col.back();
+            match topcard {
+                None => (),
+                Some(cidx) => {
+                    let card = &self.deck[*cidx];
+                    if card.hidden {
+                    } else {
+                        'tryplace: for f in 0..4 {
+                            let foundation: &mut VecDeque<usize> = &mut self.foundation[f];
+                            match foundation.back() {
+                                None => {
+                                    if card.value == 1 {
+                                        foundation.push_back(col.pop_back().unwrap());
+                                        break 'tryplace;
+                                    }
+                                }
+                                Some(x) => {
+                                    let ftopcard = &self.deck[*x];
+                                    if ftopcard.suite == card.suite
+                                        && ftopcard.value == card.value - 1
+                                    {
+                                        foundation.push_back(col.pop_back().unwrap());
+                                        break 'tryplace;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     fn win(&mut self) {
         let mut ring: VecDeque<usize> = VecDeque::new();
         self.foundation[0] = (0..13).collect();
@@ -819,18 +883,21 @@ impl Game<'_> {
                 write!(self.stdout, "{}{}", cursor::Goto(x, y), card).unwrap();
             }
             self.stdout.flush().unwrap();
-            sleep(time::Duration::from_millis(50));
+            sleep(time::Duration::from_millis(30));
         }
         ctr = 1;
         loop {
-            if ctr > 800 {
+            if ctr > 3000 {
                 break;
             }
             ctr += 1;
-            let xscale: f64 =
-                2.0 * ((ctr as f64 / 23.0).cos().abs() + (ctr as f64 / 130.0).sin().abs() * 0.5);
+
             self.show();
             for (i, cidx) in ring.iter().enumerate() {
+                let xscale: f64 = 0.8
+                    * (2.0 * ((ctr + i) as f64 / 2.0).cos()
+                        + (ctr as f64 / 23.0).cos().abs()
+                        + (ctr as f64 / 130.0).sin().abs() * 0.5);
                 let card = &mut self.deck[*cidx];
                 if ((i + ctr) % 2) == 0 {
                     card.hidden = false;
@@ -849,7 +916,7 @@ impl Game<'_> {
                 write!(self.stdout, "{}{}", cursor::Goto(x, y), card).unwrap();
             }
             self.stdout.flush().unwrap();
-            sleep(time::Duration::from_millis(5));
+            sleep(time::Duration::from_millis(1));
         }
         write!(
             self.stdout,
